@@ -1,0 +1,12 @@
+{
+  "name": "projection-views",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "投影与视图 3D 教学网页（Benjamin Xu）",
+  "scripts": {
+    "test": "node --test test/",
+    "build": "node scripts/build-standalone.mjs"
+  },
+  "license": "MIT"
+}
