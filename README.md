@@ -38,12 +38,24 @@ Designed by Benjamin Xu
 - 按需渲染（只有变化时才重画），像素比最高 2，移动端 60fps。
 - Three.js r160 和需要的 addons 都放在 `vendor/` 里，不用 CDN。
 
+## geometry-76 子应用：展开三视图
+
+`geometry-76/`（176 种模型：基础 76 + 进阶 100）顶部有「展开图」按钮（控制台「三视图」里也有「展开三视图（平面）」开关，URL 加 `?unfold=1` 直接打开），把三视图按第一角画法摊平在一张图上：主视图 V 面在左上、左视图 W 面在右上、俯视图 H 面在左下，原点 O 居中，X 轴向左、Z 轴向上、Y 轴分别向右和向下。
+
+- 几何计算在 `geometry-76/unfold.js`（纯 JS，可在 Node 里跑）：顶点焊接 → 共线棱在所有端点处切分（消除 CSG 的 T 形接点）→ 按两侧面夹角分为尖棱 / 光滑棱 / 共面分割线；光滑棱只在“一侧朝向、一侧背向观察者”时画（曲面转向轮廓线）；可见性沿用主页面 `src/views.js` 的“投影三角形深度比较 + 栅格加速”，交界点二分细化；同一直线上实线覆盖虚线。
+- 基础模型中“叠放”的组合体（三级阶梯、方台叠层、门形组合体、立体十字、圆柱与圆锥组合）先用 `csg.js` 求并集，埋在内部的面不会被当成轮廓。
+- 展开图跟随当前的旋转滑块和剖切状态。
+
 ## 开发
 
 ```bash
-npm test            # 投影数学（正投影、中心投影手算值、放大倍数、旋转矩阵）+ 45 种几何体（封闭、体积、三视图）
+npm test            # 展开三视图单元测试（已知答案的孔、槽、组合体）+ 投影数学（正投影、中心投影手算值、放大倍数、旋转矩阵）+ 45 种几何体（封闭、体积、三视图）
 npm run build       # 生成 app.min.js 和 dist/projection-views-standalone.html
 npm run shots       # Playwright 390×844 触屏截图到 docs/screenshots，并检查控制台错误
+
+# geometry-76 展开三视图逐模型检查（需先在仓库根目录 python3 -m http.server 8876 --bind 127.0.0.1）
+NODE_PATH=<playwright 所在 node_modules> node test/unfold-check.cjs /path/to/review-dir
+#   176 个模型逐个导出 SVG/PNG；检查无报错、长对正/高平齐/宽相等（容差 1e-6）、独立射线求交核对虚实线；390px 竖屏截图与横向溢出检查；原有功能回归
 ```
 
 ## 已知限制

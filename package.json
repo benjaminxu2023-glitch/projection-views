@@ -5,7 +5,8 @@
   "type": "module",
   "description": "投影与视图 3D 教学网页（Designed by Benjamin Xu）",
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test test/*.test.mjs",
+    "check:unfold": "node test/unfold-check.cjs",
     "build": "node scripts/build.mjs",
     "shots": "node scripts/shots.mjs",
     "serve": "python3 -m http.server 8080"
