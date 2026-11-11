@@ -4,7 +4,8 @@
 
 const GRID = 40;
 
-export function computeView(solid, verts, triNormals, wall) {
+// trace（可选，仅供独立核对用）：{ vis: [], hid: [] }，记录每条输出线段来自 edges 中的第几条棱
+export function computeView(solid, verts, triNormals, wall, trace) {
   const { tris, edges } = solid;
   const U = wall.U, V = wall.V, N = wall.N;
   const nV = verts.length / 3, nT = tris.length / 3;
@@ -82,6 +83,7 @@ export function computeView(solid, verts, triNormals, wall) {
         const end = i / n;
         const out = prev ? hid : vis;
         out.push(pu[a] + du * start, pv[a] + dv * start, pu[a] + du * end, pv[a] + dv * end);
+        if (trace) (prev ? trace.hid : trace.vis).push(e / 5, start, end);
         start = end; prev = state;
       }
     }

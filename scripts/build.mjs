@@ -9,7 +9,7 @@ writeFileSync(root + 'app.min.js', js);
 const html = readFileSync(root + 'index.html', 'utf8');
 const icon = 'data:image/svg+xml;base64,' + Buffer.from(readFileSync(root + 'icon.svg')).toString('base64');
 const single = html
-  .replace('<script type="module" src="./app.min.js"></script>', () => `<script type="module">\n${js.replace(/<\/script/g, '<\\/script')}\n</script>`)
+  .replace(/<script type="module" src="\.\/app\.min\.js(\?v=\d+)?"><\/script>/, () => `<script type="module">\n${js.replace(/<\/script/g, '<\\/script')}\n</script>`)
   .replaceAll('href="icon.svg"', `href="${icon}"`);
 mkdirSync(root + 'dist', { recursive: true });
 writeFileSync(root + 'dist/projection-views-standalone.html', single);

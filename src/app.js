@@ -2,9 +2,10 @@ import * as THREE from '../vendor/three.module.min.js';
 import { LineSegments2 } from '../vendor/addons/LineSegments2.js';
 import { LineSegmentsGeometry } from '../vendor/addons/LineSegmentsGeometry.js';
 import { LineMaterial } from '../vendor/addons/LineMaterial.js';
-import { SOLIDS, buildSolid } from './solids.js';
+import { SOLIDS, buildSolid, buildSolidFromMesh } from './solids.js';
 import { WALLS, WALL_SIZE as S, rotationMatrix, magnification, dot } from './projection.js';
 import { computeView } from './views.js';
+import { parseParams } from './params.js';
 
 // ---------------- 状态 ----------------
 const CENTER = [2.5, 2.5, 2.1];
@@ -14,20 +15,11 @@ const DEFAULT_LIGHT = [3.2, 0.35, 0.45];
 const LIGHT_DIST_MAX = 6.2;
 const LIGHT_OFF_MAX = 1.6;
 const MASK_RES = 1024;
-const qs = new URLSearchParams(location.search);
-const nums = (s, n) => { if (!s) return null; const a = s.split(',').map(Number); return a.length === n && a.every(Number.isFinite) ? a : null; };
-const state = {
-  solid: SOLIDS.some((s) => s.id === qs.get('solid')) ? qs.get('solid') : 'cube',
-  mode: qs.get('mode') === 'central' ? 'central' : 'ortho',
-  views: qs.get('views') === '1',
-  rays: qs.get('rays') === '1',
-  unfold: qs.get('unfold') === '1',
-  shadows: qs.get('shadows') !== '0',
-  axes: qs.get('axes') !== '0',
-  rot: nums(qs.get('rot'), 3) || [0, 0, 0],
-  light: nums(qs.get('light'), 3) || [...DEFAULT_LIGHT],
-  panel: qs.get('panel') === '1',
-};
+// 模型库：页面若在加载本脚本之前提供 window.PV_LIBRARY（geometry-76 的 176 个模型），就改用它的模型；
+// 引擎其余部分（投影面、遮罩、三视图、展开、光源、旋转……）与主页完全相同。
+const LIB = typeof window !== 'undefined' && window.PV_LIBRARY ? window.PV_LIBRARY : null;
+const CATALOG = LIB ? LIB.items : SOLIDS;
+const state = parseParams(location.search, { ids: CATALOG.map((s) => s.id), defaultId: LIB ? LIB.defaultId : 'cube', allowModel: !!LIB, defaultLight: DEFAULT_LIGHT });
 let solid = null;
 
 // ---------------- 渲染器与场景 ----------------
@@ -302,7 +294,7 @@ function clampLight() { const mn = lightMin(), mx = lightMax(); state.light = st
 
 function setSolid(id) {
   state.solid = id;
-  solid = buildSolid(id);
+  solid = LIB ? buildSolidFromMesh(LIB.meta(id), LIB.mesh(id)) : buildSolid(id);
   objMesh.geometry.dispose();
   objMesh.geometry = solid.geometry;
   maskMesh.geometry = solid.geometry;
@@ -316,6 +308,7 @@ function setSolid(id) {
   keyLocal = pickKeyVertices(solid);
   clampLight();
   dirty.object = true;
+  if (LIB && LIB.onSolid) LIB.onSolid(id);
 }
 
 function updateObject() {
@@ -485,7 +478,7 @@ function applyUnfold() {
 // ---------------- 界面 ----------------
 const $ = (id) => document.getElementById(id);
 const sel = $('solid');
-{
+if (sel) {
   const groups = {};
   SOLIDS.forEach((s, i) => { (groups[s.group] ||= []).push([s, i]); });
   for (const [g, list] of Object.entries(groups)) {
@@ -494,7 +487,7 @@ const sel = $('solid');
     sel.appendChild(og);
   }
 }
-sel.addEventListener('change', () => { setSolid(sel.value); });
+if (sel) sel.addEventListener('change', () => { setSolid(sel.value); });
 
 const segBtns = [...document.querySelectorAll('#mode button')];
 segBtns.forEach((b) => b.addEventListener('click', () => setMode(b.dataset.v)));
@@ -554,7 +547,7 @@ function updateUIValues() {
   }
 }
 function syncUI() {
-  sel.value = state.solid;
+  if (sel) sel.value = state.solid;
   const ci = state.mode === 'central' ? 1 : 0;
   $('mode').style.setProperty('--i', ci);
   segBtns.forEach((b, i) => b.classList.toggle('on', i === ci));
@@ -612,10 +605,13 @@ syncUI();
 setPanel(state.panel);
 viewShift = viewShiftGoal;
 requestAnimationFrame(frame);
+if (LIB && LIB.mount) LIB.mount({ select(id) { if (CATALOG.some((s) => s.id === id)) { setSolid(id); syncUI(); } }, state });
 
 window.__pv = {
   ready: true, frames: 0, state, lastViews,
   set(p) { Object.assign(state, p); if (p.solid) setSolid(p.solid); if (p.light) clampLight(); if ('unfold' in p) animateCamTo(state.unfold ? unfoldCam() : defaultCam(), 10); dirty.object = true; syncUI(); },
   setPanel,
-  solids: SOLIDS.map((s) => s.id),
+  solids: CATALOG.map((s) => s.id),
+  get solid() { return solid; },
+  get unfoldK() { return unfoldK; },
 };
