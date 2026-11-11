@@ -3,6 +3,7 @@
 import * as THREE from '../vendor/three.module.min.js';
 import { ConvexGeometry } from '../vendor/addons/ConvexGeometry.js';
 import { mergeVertices, mergeGeometries, toCreasedNormals } from '../vendor/addons/BufferGeometryUtils.js';
+import { polygonMeshToTriangles, meshTopology } from './mesh.js';
 
 const SEG = 48;
 const TAU = Math.PI * 2;
@@ -135,26 +136,9 @@ function weld(g) {
 
 const FEATURE_ANGLE = 30; // 度：两相邻面夹角大于它算作棱线
 
-export function buildSolid(id) {
-  const def = SOLIDS.find((s) => s.id === id) || SOLIDS[0];
-  const parts = def.build();
-  // 归一化：居中，最大尺寸 = 2
-  const bb = new THREE.Box3();
-  for (const p of parts) { p.computeBoundingBox(); bb.union(p.boundingBox); }
-  const c = bb.getCenter(new THREE.Vector3());
-  const size = bb.getSize(new THREE.Vector3());
-  const s = 2 / Math.max(size.x, size.y, size.z);
-  for (const p of parts) { p.translate(-c.x, -c.y, -c.z); p.scale(s, s, s); }
-
-  // 拓扑（每个部件分别焊接，再拼在一起）
-  const verts = [], tris = [], triPart = [];
-  parts.forEach((p, pi) => {
-    const w = weld(p);
-    const off = verts.length / 3;
-    verts.push(...w.verts);
-    for (let i = 0; i < w.tris.length; i++) tris.push(w.tris[i] + off);
-    for (let i = 0; i < w.tris.length / 3; i++) triPart.push(pi);
-  });
+// 由三角网格求面法线、棱（[a, b, t1, t2, kind]）和橙色描边。
+// kindOf(cos, t1, t2) 返回 1 = 棱线、0 = 光滑边（只在轮廓处画）、-1 = 同一平面内的分割线（永远不画）。
+function topology(verts, tris, kindOf) {
   const nT = tris.length / 3;
   const triNormals = new Float32Array(nT * 3);
   for (let t = 0; t < nT; t++) {
@@ -175,20 +159,52 @@ export function buildSolid(id) {
       e.t.push(t); e.dir.push(a < b ? 1 : -1);
     }
   }
-  const cosF = Math.cos((FEATURE_ANGLE * Math.PI) / 180);
-  const cosFlat = Math.cos((0.5 * Math.PI) / 180);
   const edges = []; // [a, b, t1, t2, kind]  kind: 1 = 棱线, 0 = 光滑（只在轮廓处画）
   for (const e of edgeMap.values()) {
     const t1 = e.t[0], t2 = e.t.length > 1 ? e.t[1] : -1;
     let kind;
-    if (t2 < 0) kind = 1;
+    if (t2 < 0 || e.t.length > 2) kind = 1; // 开口边、非流形边一律按棱线画
     else {
       const d = triNormals[t1 * 3] * triNormals[t2 * 3] + triNormals[t1 * 3 + 1] * triNormals[t2 * 3 + 1] + triNormals[t1 * 3 + 2] * triNormals[t2 * 3 + 2];
-      if (d >= cosFlat) continue; // 同一平面内的对角线，永远不画
-      kind = d < cosF ? 1 : 0;
+      kind = kindOf(d, t1, t2);
+      if (kind < 0) continue;
     }
     edges.push(e.a, e.b, t1, t2, kind);
   }
+  const featureLines = [];
+  for (let i = 0; i < edges.length; i += 5) if (edges[i + 4] === 1) {
+    const a = edges[i] * 3, b = edges[i + 1] * 3;
+    featureLines.push(verts[a], verts[a + 1], verts[a + 2], verts[b], verts[b + 1], verts[b + 2]);
+  }
+  return { triNormals, edges, edgeMap, featureLines };
+}
+
+const cosF = Math.cos((FEATURE_ANGLE * Math.PI) / 180);
+const cosFlat = Math.cos((0.5 * Math.PI) / 180);
+// 主页 45 种几何体：夹角 > 30° 为棱线，0.5°~30° 为光滑曲面上的离散棱
+const kindByAngle = (d) => (d >= cosFlat ? -1 : d < cosF ? 1 : 0);
+
+export function buildSolid(id) {
+  const def = SOLIDS.find((s) => s.id === id) || SOLIDS[0];
+  const parts = def.build();
+  // 归一化：居中，最大尺寸 = 2
+  const bb = new THREE.Box3();
+  for (const p of parts) { p.computeBoundingBox(); bb.union(p.boundingBox); }
+  const c = bb.getCenter(new THREE.Vector3());
+  const size = bb.getSize(new THREE.Vector3());
+  const s = 2 / Math.max(size.x, size.y, size.z);
+  for (const p of parts) { p.translate(-c.x, -c.y, -c.z); p.scale(s, s, s); }
+
+  // 拓扑（每个部件分别焊接，再拼在一起）
+  const verts = [], tris = [], triPart = [];
+  parts.forEach((p, pi) => {
+    const w = weld(p);
+    const off = verts.length / 3;
+    verts.push(...w.verts);
+    for (let i = 0; i < w.tris.length; i++) tris.push(w.tris[i] + off);
+    for (let i = 0; i < w.tris.length / 3; i++) triPart.push(pi);
+  });
+  const { triNormals, edges, edgeMap, featureLines } = topology(verts, tris, kindByAngle);
 
   // 渲染用几何：合并后按 30° 折痕计算法线（曲面光滑、棱角分明）
   const flat = parts.map((p) => { const q = p.index ? p.toNonIndexed() : p.clone(); for (const k of Object.keys(q.attributes)) if (k !== 'position') q.deleteAttribute(k); return q; });
@@ -196,17 +212,79 @@ export function buildSolid(id) {
   const geometry = toCreasedNormals(merged, (FEATURE_ANGLE * Math.PI) / 180);
   geometry.computeBoundingSphere();
 
-  // 棱线（物体上的橙色描边）
-  const featureLines = [];
-  for (let i = 0; i < edges.length; i += 5) if (edges[i + 4] === 1) {
-    const a = edges[i] * 3, b = edges[i + 1] * 3;
-    featureLines.push(verts[a], verts[a + 1], verts[a + 2], verts[b], verts[b + 1], verts[b + 2]);
-  }
-
   return {
     id: def.id, name: def.name, group: def.group, parts: parts.length,
     geometry, verts: new Float32Array(verts), tris: new Uint32Array(tris), triPart: new Uint16Array(triPart),
     triNormals, edges: new Int32Array(edges), edgeMap, featureLines: new Float32Array(featureLines),
     radius: geometry.boundingSphere.radius + geometry.boundingSphere.center.length(),
+  };
+}
+
+// ---------- 由多边形网格建几何体（geometry-76 的 176 个模型） ----------
+// 棱线判定（理由见 README「曲面平滑阈值」）：
+//   · 同一光滑曲面（同一圆柱面 / 球面 / 回转面，tag 相同）上相邻两面夹角 < 40°：曲面离散棱，只在轮廓处画；
+//     最粗的离散是基础模型抛物面母线 ≈ 23.3°、CSG 球面 15°、CSG 圆柱 12.9°；回转面与端面（90°）仍是棱线；
+//   · 不同曲面（或平面）之间夹角 < 13.5°：平面与圆柱相切处（≤ 12.9°），按制图规定相切处不画线；
+//   · 其余（≥ 13.5°，例如 22° 的斜切面与顶面）一律是棱线 —— 不能像主页那样统一用 30°，否则缓坡斜面的棱会丢。
+export const MESH_SAME_SURFACE_DEG = 40;
+export const MESH_TANGENT_DEG = 13.5;
+const cosSame = Math.cos((MESH_SAME_SURFACE_DEG * Math.PI) / 180);
+const cosTan = Math.cos((MESH_TANGENT_DEG * Math.PI) / 180);
+export function meshEdgeKind(d, tag1, tag2) {
+  if (d >= cosFlat) return -1;
+  if (tag1 >= 0 && tag1 === tag2 && d > cosSame) return 0;
+  if (d > cosTan) return 0;
+  return 1;
+}
+
+// meta = {id, name, group}；mesh = {v, f, s?}（已是主页坐标：Z 向上，主视图从 +Y 看）
+export function buildSolidFromMesh(meta, mesh) {
+  const m = polygonMeshToTriangles(mesh);
+  const v = m.verts, tris = m.tris, tags = m.triTag;
+  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < v.length; i += 3) for (let a = 0; a < 3; a++) { lo[a] = Math.min(lo[a], v[i + a]); hi[a] = Math.max(hi[a], v[i + a]); }
+  const s = 2 / Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+  const c = [0, 1, 2].map((a) => (lo[a] + hi[a]) / 2);
+  const verts = new Array(v.length);
+  for (let i = 0; i < v.length; i++) verts[i] = (v[i] - c[i % 3]) * s;
+  const { triNormals, edges, edgeMap, featureLines } = topology(verts, tris, (d, t1, t2) => meshEdgeKind(d, tags[t1], tags[t2]));
+
+  // 渲染法线：每个三角形角点取“与它同属一个光滑面”的相邻三角形法线的面积加权平均
+  const nT = tris.length / 3, nV = verts.length / 3;
+  const area = new Float64Array(nT);
+  for (let t = 0; t < nT; t++) {
+    const a = tris[t * 3] * 3, b = tris[t * 3 + 1] * 3, cc = tris[t * 3 + 2] * 3;
+    const ux = verts[b] - verts[a], uy = verts[b + 1] - verts[a + 1], uz = verts[b + 2] - verts[a + 2];
+    const wx = verts[cc] - verts[a], wy = verts[cc + 1] - verts[a + 1], wz = verts[cc + 2] - verts[a + 2];
+    area[t] = Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx);
+  }
+  const inc = Array.from({ length: nV }, () => []);
+  for (let t = 0; t < nT; t++) for (let k = 0; k < 3; k++) inc[tris[t * 3 + k]].push(t);
+  const pos = new Float32Array(nT * 9), nor = new Float32Array(nT * 9);
+  const N = triNormals;
+  for (let t = 0; t < nT; t++) for (let k = 0; k < 3; k++) {
+    const vi = tris[t * 3 + k];
+    let x = 0, y = 0, z = 0;
+    for (const u of inc[vi]) {
+      const d = N[t * 3] * N[u * 3] + N[t * 3 + 1] * N[u * 3 + 1] + N[t * 3 + 2] * N[u * 3 + 2];
+      if (u !== t && meshEdgeKind(d, tags[t], tags[u]) === 1) continue;
+      x += N[u * 3] * area[u]; y += N[u * 3 + 1] * area[u]; z += N[u * 3 + 2] * area[u];
+    }
+    const l = Math.hypot(x, y, z) || 1;
+    const o = t * 9 + k * 3;
+    pos[o] = verts[vi * 3]; pos[o + 1] = verts[vi * 3 + 1]; pos[o + 2] = verts[vi * 3 + 2];
+    nor[o] = x / l; nor[o + 1] = y / l; nor[o + 2] = z / l;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geometry.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  geometry.computeBoundingSphere();
+
+  return {
+    id: meta.id, name: meta.name, group: meta.group, parts: 1,
+    geometry, verts: new Float32Array(verts), tris: new Uint32Array(tris), triPart: new Uint16Array(nT), triTag: Int32Array.from(tags),
+    triNormals, edges: new Int32Array(edges), edgeMap, featureLines: new Float32Array(featureLines),
+    radius: geometry.boundingSphere.radius + geometry.boundingSphere.center.length(),
+    meshStats: { ...m.stats, ...meshTopology(tris) },
   };
 }
